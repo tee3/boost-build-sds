@@ -1,0 +1,296 @@
+# Boost.Build support for the Software Development Systems CrossCode
+# C/C++ Compiler.
+#
+# @todo add automatic library and runtime selection
+# @todo add linker command file library
+# @todo deal with dynamic linking
+# @todo deal with multi-threaded?
+
+import property ;
+import generators ;
+import os ;
+import type ;
+import toolset ;
+import testing ;
+import regex ;
+import errors ;
+import feature ;
+import path ;
+import common ;
+import errors ;
+
+if [ MATCH (--debug-configuration) : [ modules.peek : ARGV ] ]
+{
+  .debug-configuration = true ;
+}
+
+if ! ( baremetal in [ feature.values target-os ] )
+{
+  feature.extend target-os : baremetal ;
+}
+
+feature.extend toolset : crosscode ;
+
+feature.extend architecture :
+  m68000
+  ;
+
+feature.extend instruction-set :
+  m68000
+  m68328
+  ;
+
+type.set-generated-target-suffix EXE : <toolset>crosscode : out ;
+type.set-generated-target-suffix OBJ : <toolset>crosscode : o ;
+type.set-generated-target-suffix STATIC_LIB : <toolset>crosscode : a ;
+
+generators.register-linker crosscode.link : OBJ STATIC_LIB : EXE : <toolset>crosscode <target-os>baremetal ;
+
+generators.register-archiver crosscode.archive : OBJ : STATIC_LIB : <toolset>crosscode <target-os>baremetal ;
+
+generators.register-c-compiler crosscode.compile.c++ : CPP : OBJ : <toolset>crosscode <target-os>baremetal ;
+generators.register-c-compiler crosscode.compile.c : C : OBJ : <toolset>crosscode <target-os>baremetal ;
+generators.register-c-compiler crosscode.compile.asm : ASM : OBJ : <toolset>crosscode <target-os>baremetal ;
+
+rule init ( version ? : command * : options * )
+{
+  # Check that the host operating system is supported.  If it is not,
+  # continue without configuring so we can still build targets that do
+  # not need this toolset.
+  if [ os.name ] = NT || [ os.name ] = CYGWIN || [ os.name ] = LINUX
+  {
+    command = [ common.get-invocation-command crosscode : cc68000 : $(command) ] ;
+
+    if $(command)
+    {
+      local output = [ SHELL "\"$(command)\" -C" ] ;
+
+      local detected-version-components = [ MATCH "Release ([0-9]+\\.[0-9]+(\\.[0-9]+)?)" : $(output) ] ;
+      local detected-version = $(detected-version-components[1]) ;
+
+      if ! $(detected-version)
+      {
+        errors.user-error "crosscode: no version detected" ;
+      }
+
+      if $(version)
+      {
+        if $(detected-version) != $(version)
+        {
+          errors.user-error "crosscode: detected version (" $(detected-version) ") does not match desired (" $(version) ")" ;
+        }
+      }
+
+      if $(detected-version)
+      {
+        version = $(detected-version) ;
+      }
+    }
+    else
+    {
+      errors.user-error "crosscode: cc6800 not found at" $(command) ;
+    }
+
+    root = [ common.get-absolute-tool-path $(command[-1]) ] ;
+    root = $(root:D) ;
+
+    local condition = [ common.check-init-parameters crosscode : version $(version) ] ;
+
+    common.handle-options crosscode : $(condition) : $(command) : $(options) ;
+
+    toolset.add-requirements <toolset>crosscode:<testing.launcher>"$(root)/cmd/sim68k" ;
+    toolset.add-requirements <toolset>crosscode:<testing.launcher>echo ;
+
+    if $(.debug-configuration)
+    {
+      ECHO "crosscode: using compiler" $(version) "at" $(root) ;
+    }
+
+    toolset.flags crosscode .bin $(condition) : $(root)/cmd ;
+
+    # Declare flags
+
+    toolset.flags crosscode.link OPTIONS $(condition)/<strip>off : ;
+    toolset.flags crosscode.link OPTIONS $(condition)/<strip>on : -s ;
+
+    toolset.flags crosscode.compile OPTIONS $(condition)/<debug-symbols>off : ;
+    toolset.flags crosscode.compile OPTIONS $(condition)/<debug-symbols>on : -f ;
+
+    toolset.flags crosscode.compile.c OPTIONS $(condition)/<optimization>off : ;
+    toolset.flags crosscode.compile.c OPTIONS $(condition)/<optimization>speed : -Os ;
+    toolset.flags crosscode.compile.c OPTIONS $(condition)/<optimization>space : -OS ;
+
+    toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<optimization>off : ;
+    toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<optimization>speed : -Os ;
+    toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<optimization>space : -OS ;
+
+    # @todo no option for this in this compiler
+    # toolset.flags crosscode.compile.c OPTIONS $(condition)/<profiling>off : ;
+    # toolset.flags crosscode.compile.c OPTIONS $(condition)/<profiling>on : ;
+
+    # toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<profiling>off : ;
+    # toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<profiling>on : ;
+
+    toolset.flags crosscode.compile.c OPTIONS $(condition)/<inlining>off : -Oi ;
+    toolset.flags crosscode.compile.c OPTIONS $(condition)/<inlining>on : -OI ;
+    toolset.flags crosscode.compile.c OPTIONS $(condition)/<inlining>full : -OI ;
+
+    toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<inlining>off : -Oi ;
+    toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<inlining>on : -OI ;
+    toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<inlining>full : -OI ;
+
+    # @todo no option for this in this compiler
+    #toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<rtti>off : ;
+    #toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<rtti>on : -rtti ;
+
+    # @todo no option for this in this compiler
+    #toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<exception-handling>off : ;
+    #toolset.flags crosscode.compile.c++ OPTIONS $(condition)/<exception-handling>on : --exceptions ;
+
+    toolset.flags crosscode.compile OPTIONS.c $(condition)/<warnings>off : -w ;
+    toolset.flags crosscode.compile OPTIONS.c $(condition)/<warnings>all : -l ;
+
+    toolset.flags crosscode.compile OPTIONS.c++ $(condition)/<warnings>off : -w ;
+    toolset.flags crosscode.compile OPTIONS.c++ $(condition)/<warnings>all : -l ;
+
+    # @todo no option for this in this compiler
+    #toolset.flags crosscode.compile OPTIONS.c $(condition)/<warnings-as-errors>off : ;
+    #toolset.flags crosscode.compile OPTIONS.c $(condition)/<warnings-as-errors>on : ;
+
+    #toolset.flags crosscode.compile OPTIONS.c++ $(condition)/<warnings-as-errors>off : ;
+    #toolset.flags crosscode.compile OPTIONS.c++ $(condition)/<warnings-as-errors>on : ;
+
+    toolset.flags crosscode.link OPTIONS $(condition) : <linkflags> ;
+    toolset.flags crosscode.archive AROPTIONS $(condition) : <archiveflags> ;
+    toolset.flags crosscode.compile OPTIONS $(condition) : <compileflags> ;
+
+    toolset.flags crosscode.compile.c OPTIONS $(condition) : <cflags> ;
+    toolset.flags crosscode.compile.c++ OPTIONS $(condition) : <cxxflags> ;
+    toolset.flags crosscode.compile.asm OPTIONS $(condition) : <asmflags> ;
+
+    toolset.flags crosscode.compile DEFINES $(condition) : <define> ;
+    toolset.flags crosscode.compile UNDEFINES $(condition) : <undef> ;
+    toolset.flags crosscode.compile INCLUDES $(condition) : <include> ;
+
+    toolset.flags crosscode.compile.c DEFINE_OPTION $(condition) : -D : unchecked ;
+    toolset.flags crosscode.compile.c++ DEFINE_OPTION $(condition) : -D : unchecked ;
+    toolset.flags crosscode.compile.asm DEFINE_OPTION $(condition) : -D : unchecked ;
+    #toolset.flags crosscode.compile.c UNDEFINE_OPTION $(condition) : -U : unchecked ;
+    #toolset.flags crosscode.compile.c++ UNDEFINE_OPTION $(condition) : -U : unchecked ;
+    #toolset.flags crosscode.compile.asm UNDEFINE_OPTION $(condition) : -U : unchecked ;
+    toolset.flags crosscode.compile INCLUDE_PATH_OPTION $(condition) : -I : unchecked ;
+    toolset.flags crosscode.compile SYSTEM_INCLUDE_PATH_OPTION $(condition) : -I : unchecked ;
+
+    # @todo endianess left at default for now.
+    toolset.flags crosscode.link DEFAULTS $(condition) : ;
+    toolset.flags crosscode.compile.c DEFAULTS $(condition) : ;
+    toolset.flags crosscode.compile.c++ DEFAULTS $(condition) : ;
+    toolset.flags crosscode.compile.asm DEFAULTS $(condition) : ;
+
+    toolset.flags crosscode.link DEFINES $(condition) : <define> ;
+    toolset.flags crosscode.link UNDEFINES $(condition) : <undef> ;
+    toolset.flags crosscode.link LIBRARY_PATH $(condition) : <library-path> ;
+    toolset.flags crosscode.link FINDLIBS_ST $(condition) : <find-static-library> ;
+    toolset.flags crosscode.link FINDLIBS_SA $(condition) : <find-shared-library> ;
+    toolset.flags crosscode.link LIBRARIES $(condition) : <library-file> ;
+    toolset.flags crosscode.link LIBRARY_PATH_OPTION $(condition) : -L : unchecked ;
+    toolset.flags crosscode.link LIBRARY_OPTION $(condition) : -l : unchecked ;
+    #toolset.flags crosscode.link DEFINE_OPTION $(condition) : -D : unchecked ;
+    #toolset.flags crosscode.link UNDEFINE_OPTION $(condition) : -U : unchecked ;
+    toolset.flags crosscode.link RUN_PATH $(condition) : $(root)/cmd ;
+
+    toolset.flags crosscode.link STDLIBRARIES $(condition) : c ;
+    toolset.flags crosscode.link STDLIBRARIES $(condition) : f ;
+
+    toolset.flags crosscode.hex OPTIONS $(condition) : <flags> ;
+    toolset.flags crosscode.hex HEX_OUTPUT_OPTION $(condition) : "-o " ;
+
+    cpu-flags crosscode.compile OPTIONS : $(condition) : m68000 : m68000 : : default ;
+    cpu-flags crosscode.compile OPTIONS : $(condition) : m68000 : m68328 : -V 68328 ;
+
+    cpu-flags crosscode.compile STDHDRS : $(condition) : m68000 : m68000 : $(root)/lib68000/include : default ;
+    cpu-flags crosscode.compile STDHDRS : $(condition) : m68000 : m68328 : $(root)/lib68328/include ;
+
+    cpu-flags crosscode.asm OPTIONS : $(condition) : m68000 : m68000 : : default ;
+    cpu-flags crosscode.asm OPTIONS : $(condition) : m68000 : m68328 : -V 68328 ;
+
+    cpu-flags crosscode.asm OPTIONS : $(condition) : m68000 : m68000 : -F $(root)/lib60000/optas : default ;
+    cpu-flags crosscode.asm OPTIONS : $(condition) : m68000 : m68328 : -F $(root)/lib68328/optas ;
+
+    cpu-flags crosscode.asm OPTIONS : $(condition) : m68000 : m68000 : -I $(root)/lib60000/include : default ;
+    cpu-flags crosscode.asm OPTIONS : $(condition) : m68000 : m68328 : -I $(root)/lib68328/include ;
+
+    cpu-flags crosscode.link OPTIONS : $(condition) : m68000 : m68000 : : default ;
+    cpu-flags crosscode.link OPTIONS : $(condition) : m68000 : m68328 : -V 68328 ;
+
+    cpu-flags crosscode.link STDLIBPATH : $(condition) : m68000 : m68000 : $(root)/lib60000 : default ;
+
+    cpu-flags crosscode.link STDLIBPATH : $(condition) : m68000 : m68328 : $(root)/lib68328 ;
+    cpu-flags crosscode.link STDLIBPATH : $(condition) : m68000 : m68328 : $(root)/lib68328/ffp68k ;
+
+    cpu-flags crosscode.link STDLIBRARIES : $(condition) : m68000 : m68328 : ffp ;
+  }
+  else
+  {
+    ECHO "crosscode: warning: unsupported operating system" os.name ;
+  }
+}
+
+actions compile.c
+{
+  "$(CONFIG_COMMAND)" $(DEFAULTS) $(OPTIONS) $(DEFINE_OPTION)$(DEFINES) $(UNDEFINE_OPTION)$(UNDEFINES) $(SYSTEM_INCLUDE_PATH_OPTION)"$(STDHDRS:W)" $(INCLUDE_PATH_OPTION)"$(INCLUDES:W)" -o "$(<:W)" "$(>:W)"
+}
+
+actions compile.c++
+{
+  "$(CONFIG_COMMAND)" $(DEFAULTS) $(OPTIONS) $(DEFINE_OPTION)$(DEFINES) $(UNDEFINE_OPTION)$(UNDEFINES) $(SYSTEM_INCLUDE_PATH_OPTION)"$(STDHDRS:W)" $(INCLUDE_PATH_OPTION)"$(INCLUDES:W)" -o "$(<:W)" "$(>:W)"
+}
+
+actions compile.asm
+{
+  "$(.bin)/as68000" $(DEFAULTS) $(OPTIONS) $(DEFINE_OPTION)$(DEFINES) $(UNDEFINE_OPTION)$(UNDEFINES) $(SYSTEM_INCLUDE_PATH_OPTION)"$(STDHDRS:W)" $(INCLUDE_PATH_OPTION)"$(INCLUDES:W)" -o "$(<:W)" "$(>:W)"
+}
+
+actions link
+{
+  "$(.bin)/linker" $(DEFAULTS) -c -d -y $(OPTIONS) $(DEFINE_OPTION)$(DEFINES) $(UNDEFINE_OPTION)$(UNDEFINES) $(LIBRARY_PATH_OPTION)"$(LIBRARY_PATH:W)" $(LIBRARY_PATH_OPTION)"$(STDLIBPATH:W)" -X -o "$(<:W)" "$(>:W)" $(LIBRARY_OPTION)"$(LIBRARIES:W)" $(LIBRARY_OPTION)"$(STDLIBRARIES:W)"
+  "$(.bin)/sym" -m -o $(<:S=.map) $(<:S=.out)
+}
+
+actions together piecemeal archive
+{
+  "$(.bin)/liber" $(AROPTIONS) -ycv "$(<:W)" "$(>:W)"
+}
+
+# Hex Converter
+# @todo Hex should become a top-level target type
+actions hex
+{
+  "$(.bin)/down" $(OPTIONS) $(HEX_OUTPUT_OPTION)"$(<)" "$(>)"
+}
+
+local rule cpu-flags ( toolset variable : condition ? : architecture : instruction-set + : values * : default ? )
+{
+  if $(condition)
+  {
+    if $(default)
+    {
+      # architecture and instruction-set are not set
+      toolset.flags $(toolset) $(variable) $(condition)/<architecture>/<instruction-set> : $(values) ;
+      # instruction-set is not set
+      toolset.flags $(toolset) $(variable) $(condition)/<architecture>$(architecture)/<instruction-set> : $(values) ;
+    }
+    toolset.flags $(toolset) $(variable) $(condition)/<architecture>/<instruction-set>$(instruction-set) $(condition)/<architecture>$(architecture)/<instruction-set>$(instruction-set) : $(values) ;
+  }
+  else
+  {
+    if $(default)
+    {
+      # architecture and instruction-set are not set
+      toolset.flags $(toolset) $(variable) <architecture>/<instruction-set> : $(values) ;
+      # instruction-set is not set
+      toolset.flags $(toolset) $(variable) <architecture>$(architecture)/<instruction-set> : $(values) ;
+    }
+    toolset.flags $(toolset) $(variable) <architecture>/<instruction-set>$(instruction-set) <architecture>$(architecture)/<instruction-set>$(instruction-set) : $(values) ;
+  }
+}
